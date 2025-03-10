@@ -1,0 +1,82 @@
+#include <Wire.h>
+#include <SPI.h>
+#include <RF24.h>
+#include <Adafruit_BME280.h>
+#include <MPU9250.h>
+#include <TinyGPS++.h>
+#include <SoftwareSerial.h>
+
+#define CE_PIN 9
+#define CSN_PIN 10
+#define GPS_RX 4
+#define GPS_TX 3
+
+RF24 radio(CE_PIN, CSN_PIN);
+Adafruit_BME280 bme;
+MPU9250 mpu;
+SoftwareSerial gpsSerial(GPS_RX, GPS_TX);
+TinyGPSPlus gps;
+
+struct DataPacket {
+    float temperature;
+    float pressure;
+    float altitude;
+    float accelX, accelY, accelZ;
+    float gyroX, gyroY, gyroZ;
+    float gasConcentration;
+    float latitude;
+    float longitude;
+};
+
+void setup() {
+    Serial.begin(115200);
+    gpsSerial.begin(9600);
+    Wire.begin();
+    
+    if (!bme.begin(0x76)) {
+        Serial.println("BME280 not found");
+    }
+    
+    if (mpu.begin() < 0) {
+        Serial.println("MPU9250 not found");
+    }
+    
+    radio.begin();
+    radio.openWritingPipe(0xF0F0F0F0E1LL);
+    radio.setPALevel(RF24_PA_LOW);
+    radio.stopListening();
+}
+
+void loop() {
+    DataPacket data;
+    
+    data.temperature = bme.readTemperature();
+    data.pressure = bme.readPressure() / 100.0;
+    data.altitude = bme.readAltitude(1013.25);
+    
+    mpu.readSensor();
+    data.accelX = mpu.getAccelX_mss();
+    data.accelY = mpu.getAccelY_mss();
+    data.accelZ = mpu.getAccelZ_mss();
+    data.gyroX = mpu.getGyroX_rads();
+    data.gyroY = mpu.getGyroY_rads();
+    data.gyroZ = mpu.getGyroZ_rads();
+    
+    if (gpsSerial.available()) {
+        gps.encode(gpsSerial.read());
+        if (gps.location.isUpdated()) {
+            data.latitude = gps.location.lat();
+            data.longitude = gps.location.lng();
+        }
+    }
+    
+    radio.write(&data, sizeof(DataPacket));
+    
+    Serial.print("Temp: "); Serial.print(data.temperature);
+    Serial.print(" Pressure: "); Serial.print(data.pressure);
+    Serial.print(" Altitude: "); Serial.print(data.altitude);
+    Serial.print(" Lat: "); Serial.print(data.latitude);
+    Serial.print(" Lon: "); Serial.println(data.longitude);
+    
+    delay(1000);
+}
