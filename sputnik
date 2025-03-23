@@ -1,82 +1,74 @@
-#include <Wire.h>
-#include <SPI.h>
-#include <RF24.h>
-#include <Adafruit_BME280.h>
-#include <MPU9250.h>
-#include <TinyGPS++.h>
-#include <SoftwareSerial.h>
+from machine import Pin, I2C, ADC, UART
+import time
+import sdcard
+import os
+import struct
+import micropython
+from ublox_gps import UbloxGPS
+import mpu9250
+import ina219
+import onewire, ds18x20
 
-#define CE_PIN 9
-#define CSN_PIN 10
-#define GPS_RX 4
-#define GPS_TX 3
+# Инициализация шины I2C
+i2c = I2C(0, scl=Pin(21), sda=Pin(20))
 
-RF24 radio(CE_PIN, CSN_PIN);
-Adafruit_BME280 bme;
-MPU9250 mpu;
-SoftwareSerial gpsSerial(GPS_RX, GPS_TX);
-TinyGPSPlus gps;
+# Инициализация MPU-9250
+mpu = mpu9250.MPU9250(i2c)
 
-struct DataPacket {
-    float temperature;
-    float pressure;
-    float altitude;
-    float accelX, accelY, accelZ;
-    float gyroX, gyroY, gyroZ;
-    float gasConcentration;
-    float latitude;
-    float longitude;
-};
+# Инициализация INA219
+ina = ina219.INA219(i2c)
+ina.configure()
 
-void setup() {
-    Serial.begin(115200);
-    gpsSerial.begin(9600);
-    Wire.begin();
-    
-    if (!bme.begin(0x76)) {
-        Serial.println("BME280 not found");
-    }
-    
-    if (mpu.begin() < 0) {
-        Serial.println("MPU9250 not found");
-    }
-    
-    radio.begin();
-    radio.openWritingPipe(0xF0F0F0F0E1LL);
-    radio.setPALevel(RF24_PA_LOW);
-    radio.stopListening();
-}
+# Инициализация датчика освещенности GY30
+LIGHT_SENSOR_ADDR = 0x23
+def read_light():
+    i2c.writeto(LIGHT_SENSOR_ADDR, b'\x10')
+    time.sleep(0.2)
+    data = i2c.readfrom(LIGHT_SENSOR_ADDR, 2)
+    return (data[0] << 8 | data[1]) / 1.2
 
-void loop() {
-    DataPacket data;
-    
-    data.temperature = bme.readTemperature();
-    data.pressure = bme.readPressure() / 100.0;
-    data.altitude = bme.readAltitude(1013.25);
-    
-    mpu.readSensor();
-    data.accelX = mpu.getAccelX_mss();
-    data.accelY = mpu.getAccelY_mss();
-    data.accelZ = mpu.getAccelZ_mss();
-    data.gyroX = mpu.getGyroX_rads();
-    data.gyroY = mpu.getGyroY_rads();
-    data.gyroZ = mpu.getGyroZ_rads();
-    
-    if (gpsSerial.available()) {
-        gps.encode(gpsSerial.read());
-        if (gps.location.isUpdated()) {
-            data.latitude = gps.location.lat();
-            data.longitude = gps.location.lng();
-        }
-    }
-    
-    radio.write(&data, sizeof(DataPacket));
-    
-    Serial.print("Temp: "); Serial.print(data.temperature);
-    Serial.print(" Pressure: "); Serial.print(data.pressure);
-    Serial.print(" Altitude: "); Serial.print(data.altitude);
-    Serial.print(" Lat: "); Serial.print(data.latitude);
-    Serial.print(" Lon: "); Serial.println(data.longitude);
-    
-    delay(1000);
-}
+# Инициализация DS18B20
+ds_pin = Pin(18)
+ds_sensor = ds18x20.DS18X20(onewire.OneWire(ds_pin))
+roms = ds_sensor.scan()
+
+def read_temperature():
+    ds_sensor.convert_temp()
+    time.sleep(0.75)
+    return ds_sensor.read_temp(roms[0])
+
+# Инициализация GPS Ublox Neo 6M
+uart = UART(1, baudrate=9600, tx=Pin(4), rx=Pin(5))
+gps = UbloxGPS(uart)
+
+def get_gps_data():
+    try:
+        geo = gps.read()
+        if geo:
+            return geo.lat, geo.lon, geo.altitude
+    except:
+        return None, None, None
+
+# Инициализация SD-карты
+spi = machine.SPI(1, baudrate=1000000, sck=Pin(10), mosi=Pin(11), miso=Pin(12))
+cs = Pin(13, machine.Pin.OUT)
+sd = sdcard.SDCard(spi, cs)
+os.mount(sd, "/sd")
+
+def log_data():
+    with open("/sd/data.txt", "a") as f:
+        light = read_light()
+        temp = read_temperature()
+        voltage, current = ina.voltage(), ina.current()
+        accel, gyro, mag = mpu.acceleration, mpu.gyro, mpu.magnetic
+        lat, lon, alt = get_gps_data()
+        
+        log_entry = f"Light: {light} lx, Temp: {temp} C, Voltage: {voltage} V, Current: {current} A, " \
+                    f"Accel: {accel}, Gyro: {gyro}, Mag: {mag}, GPS: ({lat}, {lon}, {alt})\n"
+        f.write(log_entry)
+        print(log_entry)
+
+# Основной цикл
+while True:
+    log_data()
+    time.sleep(5)
