@@ -1,74 +1,88 @@
-from machine import Pin, I2C, ADC, UART
+from machine import Pin, I2C, ADC
 import time
-import sdcard
-import os
-import struct
-import micropython
-from ublox_gps import UbloxGPS
-import mpu9250
-import ina219
+import ubinascii
+import ustruct
+from micropython import const
+
+# I2C Setup
+i2c = I2C(0, scl=Pin(21), sda=Pin(20), freq=400000)
+
+# INA219 - Current and Voltage Sensor
+from ina219 import INA219
+ina = INA219(i2c)
+
+def read_power():
+    voltage = ina.voltage()
+    current = ina.current()
+    return voltage, current
+
+# DS18B20 - Temperature Sensor
 import onewire, ds18x20
-
-# Инициализация шины I2C
-i2c = I2C(0, scl=Pin(21), sda=Pin(20))
-
-# Инициализация MPU-9250
-mpu = mpu9250.MPU9250(i2c)
-
-# Инициализация INA219
-ina = ina219.INA219(i2c)
-ina.configure()
-
-# Инициализация датчика освещенности GY30
-LIGHT_SENSOR_ADDR = 0x23
-def read_light():
-    i2c.writeto(LIGHT_SENSOR_ADDR, b'\x10')
-    time.sleep(0.2)
-    data = i2c.readfrom(LIGHT_SENSOR_ADDR, 2)
-    return (data[0] << 8 | data[1]) / 1.2
-
-# Инициализация DS18B20
-ds_pin = Pin(18)
-ds_sensor = ds18x20.DS18X20(onewire.OneWire(ds_pin))
-roms = ds_sensor.scan()
+ow = onewire.OneWire(Pin(22))
+ds = ds18x20.DS18X20(ow)
+sensors = ds.scan()
 
 def read_temperature():
-    ds_sensor.convert_temp()
-    time.sleep(0.75)
-    return ds_sensor.read_temp(roms[0])
+    ds.convert_temp()
+    time.sleep_ms(750)
+    return ds.read_temp(sensors[0])
 
-# Инициализация GPS Ublox Neo 6M
-uart = UART(1, baudrate=9600, tx=Pin(4), rx=Pin(5))
-gps = UbloxGPS(uart)
+# BME280 - Temperature, Humidity, and Pressure
+from bme280 import BME280
+bme = BME280(i2c=i2c)
 
-def get_gps_data():
-    try:
-        geo = gps.read()
-        if geo:
-            return geo.lat, geo.lon, geo.altitude
-    except:
-        return None, None, None
+def read_bme280():
+    temp, pressure, humidity = bme.read_compensated_data()
+    return temp / 100, pressure / 256, humidity / 1024
 
-# Инициализация SD-карты
-spi = machine.SPI(1, baudrate=1000000, sck=Pin(10), mosi=Pin(11), miso=Pin(12))
-cs = Pin(13, machine.Pin.OUT)
+# BH1750 - Light Sensor
+from bh1750 import BH1750
+bh1750 = BH1750(i2c)
+
+def read_light():
+    return bh1750.luminance(BH1750.CONT_HIRES_1)
+
+# MPU6050 - Gyroscope & Accelerometer
+from mpu6050 import MPU6050
+mpu = MPU6050(i2c)
+
+def read_mpu6050():
+    accel = mpu.get_accel()
+    gyro = mpu.get_gyro()
+    return accel, gyro
+
+# SGP30 - Air Quality Sensor
+from sgp30 import SGP30
+sgp = SGP30(i2c)
+sgp.init_air_quality()
+
+def read_air_quality():
+    co2, tvoc = sgp.measure_air_quality()
+    return co2, tvoc
+
+# Ublox Neo 6M - GPS Module
+import gps
+gps = gps.GPS(i2c)
+
+def read_gps():
+    gps.update()
+    return gps.latitude(), gps.longitude(), gps.altitude()
+
+# SD Card Module
+import os
+import sdcard
+spi = machine.SPI(1, baudrate=1000000, polarity=0, phase=0, sck=Pin(10), mosi=Pin(11), miso=Pin(12))
+cs = Pin(13, Pin.OUT)
 sd = sdcard.SDCard(spi, cs)
-os.mount(sd, "/sd")
+fs = os.VfsFat(sd)
+os.mount(fs, "/sd")
 
 def log_data():
-    with open("/sd/data.txt", "a") as f:
-        light = read_light()
-        temp = read_temperature()
-        voltage, current = ina.voltage(), ina.current()
-        accel, gyro, mag = mpu.acceleration, mpu.gyro, mpu.magnetic
-        lat, lon, alt = get_gps_data()
-        
-        log_entry = f"Light: {light} lx, Temp: {temp} C, Voltage: {voltage} V, Current: {current} A, " \
-                    f"Accel: {accel}, Gyro: {gyro}, Mag: {mag}, GPS: ({lat}, {lon}, {alt})\n"
-        f.write(log_entry)
-        print(log_entry)
+    with open("/sd/log.txt", "a") as f:
+        f.write("{} V, {} A, {} °C, {} hPa, {} %RH, {} lx, {} CO2, {} TVOC, {} {} {}\n".format(
+            *read_power(), read_temperature(), *read_bme280(), read_light(), *read_air_quality(), *read_gps()
+        ))
 
-# Основной цикл
 while True:
     log_data()
-    time.sleep(5)
+    time.sleep(10)
