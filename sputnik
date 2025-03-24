@@ -27,9 +27,10 @@ def read_temperature():
     time.sleep_ms(750)
     return ds.read_temp(sensors[0])
 
-# BME280 - Temperature, Humidity, and Pressure
+# BME280 - Temperature, Humidity, and Pressure bme1 = inside, bme2 = outside
 from bme280 import BME280
-bme = BME280(i2c=i2c)
+bme1 = BME280(i2c = i2c)
+bme2 = BME280(i2c = i2c)
 
 def read_bme280():
     temp, pressure, humidity = bme.read_compensated_data()
@@ -79,8 +80,8 @@ os.mount(fs, "/sd")
 
 def log_data():
     with open("/sd/log.txt", "a") as f:
-        f.write("{} V, {} A, {} °C, {} hPa, {} %RH, {} lx, {} CO2, {} TVOC, {} {} {}\n".format(
-            *read_power(), read_temperature(), *read_bme280(), read_light(), *read_air_quality(), *read_gps()
+        f.write("{} V, {} A, {} °C, {} hPa1, {} %RH1, {} hPa2, {} %RH2, {} lx, {} CO2, {} TVOC, {} {} {}\n".format(
+            *read_power(), read_temperature(), *read_bme1280(), *read_bme2280(), read_light(), *read_air_quality(), *read_gps()
         ))
 
 while True:
